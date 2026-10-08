@@ -79,6 +79,10 @@ export type World = {
   compact: () => Promise<
     { messages: SessionMessage[]; tokensBefore?: number; tokensAfter?: number } | { skip: string }
   >;
+  /** Plugin `$.command.run` of this name rejects before a turn starts. */
+  failCommand?: string;
+  /** Plugin `$.prompt.submit` rejects before a turn starts. */
+  failPrompt?: boolean;
   denyConfig: (reason: string | undefined) => void;
 };
 
@@ -278,7 +282,10 @@ export function world(on: On, options: WorldOptions = {}): World {
     const origin = e.origin;
     // The kit raises a plugin's `$.prompt.submit` with its arguments only. A test
     // call carries an origin and still needs an answer: nothing beneath this mock.
-    if (origin === undefined || origin.kind === "plugin") journal.prompts.push(e.text);
+    if (origin === undefined || origin.kind === "plugin") {
+      journal.prompts.push(e.text);
+      if (w.failPrompt) throw new Error("prompt rejected");
+    }
     return { text: e.text };
   });
   on("command.run", async (_$, e, next) => {
@@ -288,6 +295,7 @@ export function world(on: On, options: WorldOptions = {}): World {
         command: e.command,
         ...(e.args ? { args: e.args } : {}),
       });
+      if (w.failCommand === e.command) throw new Error(`unknown command: ${e.command}`);
       return { text: "" };
     }
     return next(e);

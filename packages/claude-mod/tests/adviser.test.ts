@@ -838,6 +838,75 @@ describe("before-compact prompt", () => {
     expect(w.journal.compactions).toHaveLength(1);
   });
 
+  async function retryCheckpoint($: Parameters<typeof turnEnd>[0], w: World) {
+    await w.clock.advance(60_000);
+    w.messages = [...w.messages, { role: "user", text: "more", toolUses: [] }];
+    await turnEnd($, w);
+  }
+
+  test("a before-compact command that fails before a turn does not block the next checkpoint", async ($, on) => {
+    const w = autoWorld(on, "/stow");
+    w.failCommand = "stow";
+    await $.session.start(interactiveStart);
+    await turnEnd($, w);
+    expect(w.journal.ranCommands).toEqual([{ command: "stow" }]);
+    expect(w.journal.compactions).toHaveLength(0);
+    expect(w.journal.toasts.some((toast) => toast.includes("did not run"))).toBe(true);
+    expect(stored(w).retryAfter).toBe(START + 60_000);
+    w.failCommand = undefined;
+    await retryCheckpoint($, w);
+    expect(w.journal.ranCommands).toEqual([{ command: "stow" }, { command: "stow" }]);
+    expect(w.journal.compactions).toHaveLength(0);
+    await finishSubmittedTurn($, w);
+    expect(w.journal.compactions).toHaveLength(1);
+  });
+
+  test("a before-compact prompt that fails before a turn does not block the next checkpoint", async ($, on) => {
+    const w = autoWorld(on, "Save the notes from this session.");
+    w.failPrompt = true;
+    await $.session.start(interactiveStart);
+    await turnEnd($, w);
+    expect(w.journal.prompts).toEqual(["Save the notes from this session."]);
+    expect(w.journal.compactions).toHaveLength(0);
+    expect(w.journal.toasts.some((toast) => toast.includes("did not run"))).toBe(true);
+    w.failPrompt = false;
+    await retryCheckpoint($, w);
+    expect(w.journal.prompts).toEqual([
+      "Save the notes from this session.",
+      "Save the notes from this session.",
+    ]);
+    await finishSubmittedTurn($, w);
+    expect(w.journal.compactions).toHaveLength(1);
+  });
+
+  test("a person slash command in between is not compacted as the before-compact turn", async ($, on) => {
+    const w = autoWorld(on, "/stow");
+    await $.session.start(interactiveStart);
+    await turnEnd($, w);
+    expect(w.journal.ranCommands).toEqual([{ command: "stow" }]);
+    await $.command.run({
+      command: "commit",
+      args: "",
+      origin: { kind: "composer" },
+      presentation: { layout: "main", isFullscreen: false, columns: 100 },
+    } as never).catch(() => undefined);
+    await $.turn.start({ turnId: "person-1", text: "committing" } as never);
+    await $.turn.complete({
+      answer: "Committed.",
+      durationMs: 500,
+      isAborted: false,
+      turnId: "person-1",
+      reason: "answer",
+    });
+    await drain(w);
+    expect(w.journal.compactions).toHaveLength(0);
+    expect(w.journal.statuses.at(-1)).toBeUndefined();
+    await finishSubmittedTurn($, w);
+    expect(w.journal.compactions).toHaveLength(0);
+    await retryCheckpoint($, w);
+    expect(w.journal.ranCommands).toEqual([{ command: "stow" }, { command: "stow" }]);
+  });
+
   test("a person prompt in between abandons the checkpoint and does not compact", async ($, on) => {
     const w = autoWorld(on, "Save the notes from this session.");
     await $.session.start(interactiveStart);

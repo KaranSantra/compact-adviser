@@ -6,7 +6,7 @@ import { claudeVersion, PACKAGE, run } from "./common.mjs";
 const version = claudeVersion();
 const { status, output } = run(["plugin", "validate", "--strict", PACKAGE]);
 const hooksUnquoted =
-  "hooks: session.start, prompt.submit, turn.start, turn.complete, session.compact, command.run{command=compact-adviser}, config.describe{key=compact-adviser.typesafeApiKey}, ui.close{id=compact-adviser}, ui.render{component=Pane}";
+  "hooks: session.start, prompt.submit, command.run, turn.start, turn.complete, session.compact, command.run{command=compact-adviser}, config.describe{key=compact-adviser.typesafeApiKey}, ui.close{id=compact-adviser}, ui.render{component=Pane}";
 // Some Claude Code releases quote string matchers and some do not. Accept either.
 const hooksQuoted = hooksUnquoted.replace(
   "config.describe{key=compact-adviser.typesafeApiKey}",

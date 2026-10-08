@@ -109,6 +109,7 @@ let beforeCompact:
       seq: number;
       key: string;
       turnId?: string;
+      owned: boolean;
       abandoned: boolean;
     }
   | undefined;
@@ -347,7 +348,7 @@ async function armBeforeCompact(
 ): Promise<void> {
   if (epoch !== generation || compacting || beforeCompact) return;
   const seq = ++beforeCompactSeq;
-  beforeCompact = { seq, key, abandoned: false };
+  beforeCompact = { seq, key, abandoned: false, owned: false };
   $.ui.status(BEFORE_COMPACT_STATUS);
   $.clock.after(BEFORE_COMPACT_TIMEOUT_MS, () => {
     if (beforeCompact?.seq !== seq || beforeCompact.abandoned) return;
@@ -356,11 +357,17 @@ async function armBeforeCompact(
   try {
     await submitBeforeCompact($, text);
   } catch {
-    if (beforeCompact?.seq === seq && !beforeCompact.abandoned) {
+    const handoff = beforeCompact;
+    if (handoff?.seq !== seq) return;
+    const started = handoff.turnId !== undefined;
+    if (!handoff.abandoned) {
       await abandonBeforeCompact(
         $,
         "The before-compact prompt did not run. Context left unchanged.",
       );
+    }
+    if (!started && beforeCompact?.seq === seq && beforeCompact.turnId === undefined) {
+      beforeCompact = undefined;
     }
   }
 }
@@ -870,12 +877,20 @@ export const register: Register = (on, options) => {
     return next(e);
   }).catch((_$, e, next) => next(e));
 
+  on("command.run", async ($, e, next) => {
+    if ((await isActivated($)) && beforeCompact && personStarted(e.origin)) {
+      await abandonBeforeCompact($);
+    }
+    return next(e);
+  });
+
   on("turn.start", async ($, e, next) => {
     if (await isActivated($)) {
       const handoff = beforeCompact;
       if (handoff && handoff.turnId === undefined) {
         handoff.turnId = e.turnId;
-        if (handoff.abandoned) await invalidate($);
+        handoff.owned = !handoff.abandoned;
+        if (!handoff.owned) await invalidate($);
         return next(e);
       }
       await invalidate($);
@@ -890,7 +905,7 @@ export const register: Register = (on, options) => {
     const handoff = beforeCompact;
     if (handoff && e.agentId === undefined && handoff.turnId === e.turnId) {
       beforeCompact = undefined;
-      if (handoff.abandoned) return result;
+      if (handoff.abandoned || !handoff.owned) return result;
       if (e.reason === "answer" && !e.isAborted && e.answer.trim()) {
         const key = handoff.key;
         $.clock.after(0, () => {
