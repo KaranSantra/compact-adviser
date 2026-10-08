@@ -24,6 +24,8 @@ export type Journal = {
   configSets: { key: string; value: unknown }[];
   requests: { url: string; headers: Record<string, string>; body: string }[];
   compactions: { instructions?: string }[];
+  prompts: string[];
+  ranCommands: { command: string; args?: string }[];
   messageReads: number;
   usageReads: number;
   fsReads: string[];
@@ -169,6 +171,8 @@ export function world(on: On, options: WorldOptions = {}): World {
     configSets: [],
     requests: [],
     compactions: [],
+    prompts: [],
+    ranCommands: [],
     messageReads: 0,
     usageReads: 0,
     fsReads: [],
@@ -269,6 +273,24 @@ export function world(on: On, options: WorldOptions = {}): World {
     if (configDenial !== undefined) return { deny: configDenial };
     rows.set(e.key, e.value as string | number | boolean);
     return { value: e.value };
+  });
+  on("prompt.submit", async (_$, e) => {
+    const origin = e.origin;
+    // The kit raises a plugin's `$.prompt.submit` with its arguments only. A test
+    // call carries an origin and still needs an answer: nothing beneath this mock.
+    if (origin === undefined || origin.kind === "plugin") journal.prompts.push(e.text);
+    return { text: e.text };
+  });
+  on("command.run", async (_$, e, next) => {
+    const origin = (e as { origin?: { kind?: string } }).origin;
+    if (origin === undefined || origin.kind === "plugin") {
+      journal.ranCommands.push({
+        command: e.command,
+        ...(e.args ? { args: e.args } : {}),
+      });
+      return { text: "" };
+    }
+    return next(e);
   });
   on("command.register", async (_$, e) => {
     journal.commands.push(e.name);

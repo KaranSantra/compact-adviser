@@ -726,6 +726,8 @@ describe("automatic mode", () => {
           "The session reached a natural boundary; keep the current work, pending tasks, referenced files, and the next step exact.",
       },
     ]);
+    expect(w.journal.prompts).toHaveLength(0);
+    expect(w.journal.ranCommands).toHaveLength(0);
     expect(w.journal.statuses).toContain("compacting at a checkpoint (experimental auto)…");
     expect(w.journal.toasts).toContain("compaction completed: 60,000 to 3,300 tokens.");
     expect(w.journal.logs).toEqual(["automatic compaction completed: 60,000 to 3,300 tokens."]);
@@ -783,6 +785,128 @@ describe("automatic mode", () => {
     await turnEnd($, w);
     expect(w.journal.compactions).toHaveLength(2);
     expect(stored(w).retryAfter).toBe(START + 120000);
+  });
+});
+
+describe("before-compact prompt", () => {
+  const acknowledged = { autoAcknowledged: true };
+
+  function autoWorld(on: Parameters<typeof world>[0], prompt = "") {
+    const w = world(on, { mode: "auto", consent: acknowledged });
+    if (prompt) w.rows.set(`${PLUGIN}.beforeCompactPrompt`, prompt);
+    return w;
+  }
+
+  async function finishSubmittedTurn(
+    $: Parameters<typeof turnEnd>[0],
+    w: World,
+    answer = "Notes saved.",
+  ) {
+    await $.turn.start({ turnId: "before-1", text: answer } as never);
+    await $.turn.complete({
+      answer,
+      durationMs: 1000,
+      isAborted: false,
+      turnId: "before-1",
+      reason: "answer",
+    });
+    await drain(w);
+  }
+
+  test("submits the prompt, then compacts when that turn ends cleanly", async ($, on) => {
+    const w = autoWorld(on, "Save the notes from this session.");
+    await $.session.start(interactiveStart);
+    await turnEnd($, w);
+    expect(w.journal.prompts).toEqual(["Save the notes from this session."]);
+    expect(w.journal.ranCommands).toHaveLength(0);
+    expect(w.journal.compactions).toHaveLength(0);
+    expect(w.journal.statuses).toContain("running the before-compact prompt…");
+    await finishSubmittedTurn($, w);
+    expect(w.journal.compactions).toHaveLength(1);
+    expect(w.journal.statuses.at(-1)).toBeUndefined();
+    expect(stored(w).compacted).toBe(true);
+  });
+
+  test("runs a leading slash as a command, not as model text", async ($, on) => {
+    const w = autoWorld(on, "/stow");
+    await $.session.start(interactiveStart);
+    await turnEnd($, w);
+    expect(w.journal.prompts).toHaveLength(0);
+    expect(w.journal.ranCommands).toEqual([{ command: "stow" }]);
+    expect(w.journal.compactions).toHaveLength(0);
+    await finishSubmittedTurn($, w);
+    expect(w.journal.compactions).toHaveLength(1);
+  });
+
+  test("a person prompt in between abandons the checkpoint and does not compact", async ($, on) => {
+    const w = autoWorld(on, "Save the notes from this session.");
+    await $.session.start(interactiveStart);
+    await turnEnd($, w);
+    expect(w.journal.prompts).toEqual(["Save the notes from this session."]);
+    await $.prompt.submit({
+      text: "wait, one more thing",
+      origin: { kind: "composer" },
+      wait: false,
+    } as never);
+    await drain(w);
+    expect(w.journal.compactions).toHaveLength(0);
+    expect(w.journal.statuses.at(-1)).toBeUndefined();
+    await finishSubmittedTurn($, w);
+    expect(w.journal.compactions).toHaveLength(0);
+  });
+
+  test("an interrupted before-compact turn does not compact", async ($, on) => {
+    const w = autoWorld(on, "Save the notes from this session.");
+    await $.session.start(interactiveStart);
+    await turnEnd($, w);
+    await $.turn.start({ turnId: "before-1", text: "Save the notes from this session." } as never);
+    await $.turn.complete({
+      answer: "",
+      durationMs: 1000,
+      isAborted: true,
+      turnId: "before-1",
+      reason: "aborted",
+    });
+    await drain(w);
+    expect(w.journal.compactions).toHaveLength(0);
+    expect(w.journal.statuses.at(-1)).toBeUndefined();
+  });
+
+  test("an empty setting still compacts immediately", async ($, on) => {
+    const w = autoWorld(on, "   ");
+    await $.session.start(interactiveStart);
+    await turnEnd($, w);
+    expect(w.journal.prompts).toHaveLength(0);
+    expect(w.journal.ranCommands).toHaveLength(0);
+    expect(w.journal.compactions).toHaveLength(1);
+  });
+
+  test("hint mode ignores the setting", async ($, on) => {
+    const w = world(on);
+    w.rows.set(`${PLUGIN}.beforeCompactPrompt`, "/stow");
+    await $.session.start(interactiveStart);
+    await turnEnd($, w);
+    expect(hinted(w)).toBe(true);
+    expect(w.journal.compactions).toHaveLength(0);
+    expect(w.journal.prompts).toHaveLength(0);
+    expect(w.journal.ranCommands).toHaveLength(0);
+  });
+
+  test("a timed-out before-compact prompt does not compact", async ($, on) => {
+    const w = autoWorld(on, "Save the notes from this session.");
+    await $.session.start(interactiveStart);
+    await turnEnd($, w);
+    expect(w.journal.prompts).toHaveLength(1);
+    await w.clock.advance(299_999);
+    await drain(w);
+    expect(w.journal.compactions).toHaveLength(0);
+    expect(w.journal.toasts.some((toast) => toast.includes("timed out"))).toBe(false);
+    await w.clock.advance(1);
+    await drain(w);
+    expect(w.journal.toasts.some((toast) => toast.includes("timed out"))).toBe(true);
+    expect(w.journal.compactions).toHaveLength(0);
+    await finishSubmittedTurn($, w);
+    expect(w.journal.compactions).toHaveLength(0);
   });
 });
 
