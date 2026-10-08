@@ -1102,6 +1102,38 @@ describe("before-compact prompt", () => {
     expect(w.journal.compactions).toHaveLength(0);
   });
 
+  test("a plugin turn that starts after dispatch was abandoned is not judged", async ($, on) => {
+    const w = autoWorld(on, "/stow");
+    await $.session.start(interactiveStart);
+    await turnEnd($, w);
+    expect(w.journal.requests).toHaveLength(1);
+    await $.command
+      .run({
+        command: "help",
+        args: "",
+        origin: { kind: "composer" },
+        presentation: { layout: "main", isFullscreen: false, columns: 100 },
+      } as never)
+      .catch(() => undefined);
+    await $.turn.start({
+      turnId: "stow-late",
+      text: "/stow",
+      origin: { kind: "plugin", name: PLUGIN },
+    } as never);
+    await w.clock.advance(90_000);
+    w.messages = [...w.messages, { role: "user", text: "more", toolUses: [] }];
+    await $.turn.complete({
+      answer: "Notes saved.",
+      durationMs: 1000,
+      isAborted: false,
+      turnId: "stow-late",
+      reason: "answer",
+    });
+    await drain(w);
+    expect(w.journal.requests).toHaveLength(1);
+    expect(w.journal.compactions).toHaveLength(0);
+  });
+
   test("a before-compact turn still running at the timeout is not judged when it ends", async ($, on) => {
     const w = autoWorld(on, "/stow");
     await $.session.start(interactiveStart);

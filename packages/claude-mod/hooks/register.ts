@@ -105,12 +105,23 @@ let judging = false;
 let compacting = false;
 let hintVisible = false;
 // A confirmed auto checkpoint that submitted a prompt and is waiting to compact after it.
-let beforeCompact: { seq: number; key: string; turnId?: string } | undefined;
+let beforeCompact:
+  | {
+      seq: number;
+      key: string;
+      turnId?: string;
+      /** True once this handoff has asked the host to start its turn. */
+      dispatched?: boolean;
+    }
+  | undefined;
 let beforeCompactSeq = 0;
 // The running turn of a handoff abandoned after it started; its end is not a checkpoint.
 let abandonedTurn: { turnId: string; key: string } | undefined;
+// Dispatch already happened, then the handoff was abandoned before turn.start.
+// The next plugin-origin turn is that submission; ignore its completion.
+let abandonedDispatch: { key: string } | undefined;
 // A prompt or command from anyone but this plugin was submitted and its turn has not
-// started yet; `turn.start` carries no origin, so the next turn is that submission's.
+// started yet.
 let foreignSubmitted = false;
 let diagnostic = "";
 // The settings pane: one list of rows, as the Pi extension's menu, each opening a view
@@ -322,7 +333,11 @@ async function abandonBeforeCompact($: EngineInterface, message?: string): Promi
   const handoff = beforeCompact;
   if (!handoff) return;
   beforeCompact = undefined;
-  if (handoff.turnId !== undefined) abandonedTurn = { turnId: handoff.turnId, key: handoff.key };
+  if (handoff.turnId !== undefined) {
+    abandonedTurn = { turnId: handoff.turnId, key: handoff.key };
+  } else if (handoff.dispatched) {
+    abandonedDispatch = { key: handoff.key };
+  }
   clearStatus($);
   if (message) notice($, message);
   await deferRetry($, handoff.key);
@@ -350,16 +365,18 @@ async function armBeforeCompact(
 ): Promise<void> {
   if (epoch !== generation || compacting || beforeCompact || foreignSubmitted) return;
   const seq = ++beforeCompactSeq;
-  beforeCompact = { seq, key };
+  beforeCompact = { seq, key, dispatched: false };
   $.ui.status(BEFORE_COMPACT_STATUS);
   $.clock.after(BEFORE_COMPACT_TIMEOUT_MS, () => {
     if (beforeCompact?.seq !== seq) return;
     void abandonBeforeCompact($, "The before-compact prompt timed out. Context left unchanged.");
   });
   try {
+    if (beforeCompact?.seq === seq) beforeCompact.dispatched = true;
     await submitBeforeCompact($, text);
   } catch {
     if (beforeCompact?.seq !== seq) return;
+    beforeCompact.dispatched = false;
     await abandonBeforeCompact($, "The before-compact prompt did not run. Context left unchanged.");
   }
 }
@@ -842,6 +859,7 @@ export const register: Register = (on, options) => {
     hintVisible = false;
     beforeCompact = undefined;
     abandonedTurn = undefined;
+    abandonedDispatch = undefined;
     foreignSubmitted = false;
     await $.command.register({
       name: COMMAND,
@@ -883,6 +901,14 @@ export const register: Register = (on, options) => {
 
   on("turn.start", async ($, e, next) => {
     if (await isActivated($)) {
+      const origin = (e as { origin?: { kind: string; name?: string } }).origin;
+      if (abandonedDispatch && ownSubmission(origin)) {
+        abandonedTurn = { turnId: e.turnId, key: abandonedDispatch.key };
+        abandonedDispatch = undefined;
+        foreignSubmitted = false;
+        await invalidate($);
+        return next(e);
+      }
       const foreign = foreignSubmitted;
       foreignSubmitted = false;
       const handoff = beforeCompact;

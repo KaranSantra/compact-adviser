@@ -7,7 +7,8 @@ const version = claudeVersion();
 const { status, output } = run(["plugin", "validate", "--strict", PACKAGE]);
 const hooksUnquoted =
   "hooks: session.start, prompt.submit, command.run, turn.start, turn.complete, session.compact, command.run{command=compact-adviser}, config.describe{key=compact-adviser.typesafeApiKey}, ui.close{id=compact-adviser}, ui.render{component=Pane}";
-// Some Claude Code releases quote string matchers and some do not. Accept either.
+// Measured, not assumed: pinned CI Claude Code 2.1.275 prints the key unquoted;
+// Claude Code 2.1.295 prints it quoted. Accept either.
 const hooksQuoted = hooksUnquoted.replace(
   "config.describe{key=compact-adviser.typesafeApiKey}",
   'config.describe{key="compact-adviser.typesafeApiKey"}',
