@@ -117,8 +117,8 @@ let beforeCompact:
 let beforeCompactSeq = 0;
 // The running turn of a handoff abandoned after it started; its end is not a checkpoint.
 let abandonedTurn: { turnId: string; key: string } | undefined;
-// Dispatch already happened, then the handoff was abandoned before turn.start.
-// The next plugin-origin turn is that submission; ignore its completion.
+// Dispatched, then abandoned before its turn started. turn.start carries no origin, so
+// the next turn is that submission unless a later prompt or command claimed it.
 let abandonedDispatch: { key: string } | undefined;
 // A prompt or command from anyone but this plugin was submitted and its turn has not
 // started yet.
@@ -886,7 +886,8 @@ export const register: Register = (on, options) => {
   on("prompt.submit", async ($, e, next) => {
     if ((await isActivated($)) && !ownSubmission(e.origin)) {
       foreignSubmitted = true;
-      await abandonBeforeCompact($);
+      if (beforeCompact) await abandonBeforeCompact($);
+      else abandonedDispatch = undefined;
     }
     return next(e);
   }).catch((_$, e, next) => next(e));
@@ -894,15 +895,15 @@ export const register: Register = (on, options) => {
   on("command.run", async ($, e, next) => {
     if ((await isActivated($)) && !ownSubmission(e.origin)) {
       foreignSubmitted = true;
-      await abandonBeforeCompact($);
+      if (beforeCompact) await abandonBeforeCompact($);
+      else abandonedDispatch = undefined;
     }
     return next(e);
   });
 
   on("turn.start", async ($, e, next) => {
     if (await isActivated($)) {
-      const origin = (e as { origin?: { kind: string; name?: string } }).origin;
-      if (abandonedDispatch && ownSubmission(origin)) {
+      if (abandonedDispatch) {
         abandonedTurn = { turnId: e.turnId, key: abandonedDispatch.key };
         abandonedDispatch = undefined;
         foreignSubmitted = false;

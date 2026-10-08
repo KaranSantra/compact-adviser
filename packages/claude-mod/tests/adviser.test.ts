@@ -961,7 +961,7 @@ describe("before-compact prompt", () => {
       wait: false,
     } as never);
     await $.turn.start({ turnId: "person-2", text: "one more thing" } as never);
-    await turnEnd($, w);
+    await turnEnd($, w, { ...answered(), turnId: "person-2" });
     expect(w.journal.requests).toHaveLength(2);
     expect(w.journal.ranCommands).toEqual([{ command: "stow" }, { command: "stow" }]);
     expect(w.journal.compactions).toHaveLength(0);
@@ -1098,8 +1098,12 @@ describe("before-compact prompt", () => {
     await drain(w);
     expect(w.journal.toasts.some((toast) => toast.includes("timed out"))).toBe(true);
     expect(w.journal.compactions).toHaveLength(0);
+    expect(w.journal.requests).toHaveLength(1);
+    await w.clock.advance(90_000);
+    w.messages = [...w.messages, { role: "user", text: "more", toolUses: [] }];
     await finishSubmittedTurn($, w);
     expect(w.journal.compactions).toHaveLength(0);
+    expect(w.journal.requests).toHaveLength(1);
   });
 
   test("a plugin turn that starts after dispatch was abandoned is not judged", async ($, on) => {
@@ -1115,10 +1119,39 @@ describe("before-compact prompt", () => {
         presentation: { layout: "main", isFullscreen: false, columns: 100 },
       } as never)
       .catch(() => undefined);
-    await $.turn.start({
+    await $.turn.start({ turnId: "stow-late", text: "/stow" } as never);
+    await w.clock.advance(90_000);
+    w.messages = [...w.messages, { role: "user", text: "more", toolUses: [] }];
+    await $.turn.complete({
+      answer: "Notes saved.",
+      durationMs: 1000,
+      isAborted: false,
       turnId: "stow-late",
-      text: "/stow",
-      origin: { kind: "plugin", name: PLUGIN },
+      reason: "answer",
+    });
+    await drain(w);
+    expect(w.journal.requests).toHaveLength(1);
+    expect(w.journal.compactions).toHaveLength(0);
+  });
+
+  test("a prompt during that late turn does not make its completion a checkpoint", async ($, on) => {
+    const w = autoWorld(on, "/stow");
+    await $.session.start(interactiveStart);
+    await turnEnd($, w);
+    expect(w.journal.requests).toHaveLength(1);
+    await $.command
+      .run({
+        command: "help",
+        args: "",
+        origin: { kind: "composer" },
+        presentation: { layout: "main", isFullscreen: false, columns: 100 },
+      } as never)
+      .catch(() => undefined);
+    await $.turn.start({ turnId: "stow-late", text: "/stow" } as never);
+    await $.prompt.submit({
+      text: "wait, one more thing",
+      origin: { kind: "composer" },
+      wait: false,
     } as never);
     await w.clock.advance(90_000);
     w.messages = [...w.messages, { role: "user", text: "more", toolUses: [] }];
