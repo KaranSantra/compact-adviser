@@ -107,6 +107,8 @@ let hintVisible = false;
 // A confirmed auto checkpoint that submitted a prompt and is waiting to compact after it.
 let beforeCompact: { seq: number; key: string; turnId?: string } | undefined;
 let beforeCompactSeq = 0;
+// The running turn of a handoff abandoned after it started; its end is not a checkpoint.
+let abandonedTurn: { turnId: string; key: string } | undefined;
 // A prompt or command from anyone but this plugin was submitted and its turn has not
 // started yet; `turn.start` carries no origin, so the next turn is that submission's.
 let foreignSubmitted = false;
@@ -297,21 +299,12 @@ function slashInvocation(text: string): { command: string; args?: string } | und
   return args ? { command, args } : { command };
 }
 
-/**
- * Drops the pending before-compact handoff and applies the same one-minute retry the
- * compaction-failure path uses, so the checkpoint (or a late turn of the abandoned
- * prompt) is not judged again at once.
- */
-async function abandonBeforeCompact($: EngineInterface, message?: string): Promise<void> {
-  const handoff = beforeCompact;
-  if (!handoff) return;
-  beforeCompact = undefined;
-  clearStatus($);
-  if (message) notice($, message);
+/** Applies the same one-minute retry the compaction-failure path uses. */
+async function deferRetry($: EngineInterface, key: string): Promise<void> {
   try {
     const { state } = await loadState($);
     const now = await $.clock.now();
-    await $.store.set(handoff.key, {
+    await $.store.set(key, {
       ...state,
       retryAfter: now + BEFORE_COMPACT_RETRY_MS,
       updatedAt: now,
@@ -319,6 +312,20 @@ async function abandonBeforeCompact($: EngineInterface, message?: string): Promi
   } catch {
     // The cooldown record stays as it was; the next judgment re-reads it.
   }
+}
+
+/**
+ * Drops the pending before-compact handoff and defers the next judgment, so neither the
+ * checkpoint nor the abandoned prompt's own turn, if it already started, is judged.
+ */
+async function abandonBeforeCompact($: EngineInterface, message?: string): Promise<void> {
+  const handoff = beforeCompact;
+  if (!handoff) return;
+  beforeCompact = undefined;
+  if (handoff.turnId !== undefined) abandonedTurn = { turnId: handoff.turnId, key: handoff.key };
+  clearStatus($);
+  if (message) notice($, message);
+  await deferRetry($, handoff.key);
 }
 
 async function submitBeforeCompact($: EngineInterface, text: string): Promise<void> {
@@ -834,6 +841,7 @@ export const register: Register = (on, options) => {
     compacting = false;
     hintVisible = false;
     beforeCompact = undefined;
+    abandonedTurn = undefined;
     foreignSubmitted = false;
     await $.command.register({
       name: COMMAND,
@@ -891,6 +899,12 @@ export const register: Register = (on, options) => {
   on("turn.complete", async ($, e, next) => {
     const result = await next(e);
     if (!(await isActivated($)) || !interactive) return result;
+    const abandoned = abandonedTurn;
+    if (abandoned && e.agentId === undefined && abandoned.turnId === e.turnId) {
+      abandonedTurn = undefined;
+      await deferRetry($, abandoned.key);
+      return result;
+    }
     const handoff = beforeCompact;
     if (handoff && e.agentId === undefined && handoff.turnId === e.turnId) {
       beforeCompact = undefined;
@@ -912,17 +926,7 @@ export const register: Register = (on, options) => {
         return result;
       }
       clearStatus($);
-      try {
-        const { state } = await loadState($);
-        const now = await $.clock.now();
-        await $.store.set(handoff.key, {
-          ...state,
-          retryAfter: now + BEFORE_COMPACT_RETRY_MS,
-          updatedAt: now,
-        });
-      } catch {
-        // The cooldown record stays as it was; the next judgment re-reads it.
-      }
+      await deferRetry($, handoff.key);
       notice($, "The before-compact turn did not finish cleanly. Context left unchanged.");
       return result;
     }
@@ -946,10 +950,7 @@ export const register: Register = (on, options) => {
       return result;
     }
     try {
-      if (beforeCompact) {
-        beforeCompact = undefined;
-        clearStatus($);
-      }
+      await abandonBeforeCompact($);
       await invalidate($);
       const key = sessionKey(await $.session.id());
       await $.store.set(key, initialState(true, await $.clock.now()));

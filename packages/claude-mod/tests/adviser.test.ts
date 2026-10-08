@@ -1092,6 +1092,31 @@ describe("before-compact prompt", () => {
     await finishSubmittedTurn($, w);
     expect(w.journal.compactions).toHaveLength(0);
   });
+
+  test("a before-compact turn still running at the timeout is not judged when it ends", async ($, on) => {
+    const w = autoWorld(on, "/stow");
+    await $.session.start(interactiveStart);
+    await turnEnd($, w);
+    expect(w.journal.requests).toHaveLength(1);
+    await $.turn.start({ turnId: "before-1", text: "stow" } as never);
+    await w.clock.advance(300_000);
+    await drain(w);
+    expect(w.journal.toasts.some((toast) => toast.includes("timed out"))).toBe(true);
+    await w.clock.advance(90_000);
+    w.messages = [...w.messages, { role: "user", text: "more", toolUses: [] }];
+    await $.turn.complete({
+      answer: "Notes saved.",
+      durationMs: 390_000,
+      isAborted: false,
+      turnId: "before-1",
+      reason: "answer",
+    });
+    await drain(w);
+    expect(w.journal.requests).toHaveLength(1);
+    expect(w.journal.ranCommands).toEqual([{ command: "stow" }]);
+    expect(w.journal.compactions).toHaveLength(0);
+    expect(stored(w).retryAfter).toBe(START + 450_000);
+  });
 });
 
 describe("commands", () => {
