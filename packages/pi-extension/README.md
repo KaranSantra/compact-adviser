@@ -171,8 +171,8 @@ runs one turn before that automatic compaction, and only after auto mode is conf
 `/stow` to run the `stow` command first. Claude Code does not expand slash commands or `@file`
 mentions in a prompt a plugin submits, and it rejects a plugin prompt that starts with `/`, so a
 value that starts with `/` is run as a command instead of being sent to the model as text. If you
-send your own prompt in between, or that turn is interrupted, errors, or does not finish within 5
-minutes, nothing is compacted. Hint mode, off, and an empty setting are unchanged. Pi, Codex, and
+send your own prompt or run a command in between, or that turn is interrupted, errors, or does not
+finish within 5 minutes, nothing is compacted. Hint mode, off, and an empty setting are unchanged. Pi, Codex, and
 Grok do not have this setting.
 
 ## Usage

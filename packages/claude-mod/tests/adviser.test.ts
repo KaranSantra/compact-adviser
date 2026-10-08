@@ -884,12 +884,14 @@ describe("before-compact prompt", () => {
     await $.session.start(interactiveStart);
     await turnEnd($, w);
     expect(w.journal.ranCommands).toEqual([{ command: "stow" }]);
-    await $.command.run({
-      command: "commit",
-      args: "",
-      origin: { kind: "composer" },
-      presentation: { layout: "main", isFullscreen: false, columns: 100 },
-    } as never).catch(() => undefined);
+    await $.command
+      .run({
+        command: "commit",
+        args: "",
+        origin: { kind: "composer" },
+        presentation: { layout: "main", isFullscreen: false, columns: 100 },
+      } as never)
+      .catch(() => undefined);
     await $.turn.start({ turnId: "person-1", text: "committing" } as never);
     await $.turn.complete({
       answer: "Committed.",
@@ -943,12 +945,14 @@ describe("before-compact prompt", () => {
     await $.session.start(interactiveStart);
     await turnEnd($, w);
     expect(w.journal.requests).toHaveLength(1);
-    await $.command.run({
-      command: "help",
-      args: "",
-      origin: { kind: "composer" },
-      presentation: { layout: "main", isFullscreen: false, columns: 100 },
-    } as never).catch(() => undefined);
+    await $.command
+      .run({
+        command: "help",
+        args: "",
+        origin: { kind: "composer" },
+        presentation: { layout: "main", isFullscreen: false, columns: 100 },
+      } as never)
+      .catch(() => undefined);
     await w.clock.advance(60_000);
     w.messages = [...w.messages, { role: "user", text: "more", toolUses: [] }];
     await $.prompt.submit({
@@ -1007,16 +1011,21 @@ describe("before-compact prompt", () => {
 
   const interleavings: [string, ($: Engine) => Promise<unknown>][] = [
     ["a turn starts", ($) => $.turn.start({ turnId: "person-3", text: "next" } as never)],
-    ["a manual compaction runs", ($) => $.session.compact({ trigger: "manual", messages: MESSAGES })],
+    [
+      "a manual compaction runs",
+      ($) => $.session.compact({ trigger: "manual", messages: MESSAGES }),
+    ],
     [
       "a person runs a command",
       ($) =>
-        $.command.run({
-          command: "help",
-          args: "",
-          origin: { kind: "composer" },
-          presentation: { layout: "main", isFullscreen: false, columns: 100 },
-        } as never).catch(() => undefined),
+        $.command
+          .run({
+            command: "help",
+            args: "",
+            origin: { kind: "composer" },
+            presentation: { layout: "main", isFullscreen: false, columns: 100 },
+          } as never)
+          .catch(() => undefined),
     ],
   ];
   for (const [name, interleave] of interleavings) {
