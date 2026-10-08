@@ -36,6 +36,7 @@ import {
   parseBudget,
   parseConsent,
   parseMinimum,
+  PLUGIN,
   parseSavedApiKey,
   readConfig,
   readSavedApiKey,
@@ -104,16 +105,11 @@ let judging = false;
 let compacting = false;
 let hintVisible = false;
 // A confirmed auto checkpoint that submitted a prompt and is waiting to compact after it.
-let beforeCompact:
-  | {
-      seq: number;
-      key: string;
-      turnId?: string;
-      owned: boolean;
-      abandoned: boolean;
-    }
-  | undefined;
+let beforeCompact: { seq: number; key: string; turnId?: string } | undefined;
 let beforeCompactSeq = 0;
+// A prompt or command from anyone but this plugin was submitted and its turn has not
+// started yet; `turn.start` carries no origin, so the next turn is that submission's.
+let foreignSubmitted = false;
 let diagnostic = "";
 // The settings pane: one list of rows, as the Pi extension's menu, each opening a view
 // of its own; Enter on an option or a saved value returns to the list. A save hot-reloads
@@ -288,8 +284,8 @@ async function eligible(
   );
 }
 
-function personStarted(origin: { kind: string } | undefined): boolean {
-  return origin?.kind === "composer" || origin?.kind === "bridge" || origin?.kind === "slack-ping";
+function ownSubmission(origin: { kind: string; name?: string } | undefined): boolean {
+  return origin?.kind === "plugin" && origin.name === PLUGIN;
 }
 
 /** A leading slash is a command name, not model text. Anything else is not a command. */
@@ -302,15 +298,14 @@ function slashInvocation(text: string): { command: string; args?: string } | und
 }
 
 /**
- * Marks the pending before-compact handoff abandoned and applies the same one-minute
- * retry the compaction-failure path uses, so the checkpoint is not judged again at once.
- * The record stays until that turn ends, so a late turn start is not settled into a
- * second judgment.
+ * Drops the pending before-compact handoff and applies the same one-minute retry the
+ * compaction-failure path uses, so the checkpoint (or a late turn of the abandoned
+ * prompt) is not judged again at once.
  */
 async function abandonBeforeCompact($: EngineInterface, message?: string): Promise<void> {
   const handoff = beforeCompact;
-  if (!handoff || handoff.abandoned) return;
-  handoff.abandoned = true;
+  if (!handoff) return;
+  beforeCompact = undefined;
   clearStatus($);
   if (message) notice($, message);
   try {
@@ -346,29 +341,19 @@ async function armBeforeCompact(
   text: string,
   epoch: number,
 ): Promise<void> {
-  if (epoch !== generation || compacting || beforeCompact) return;
+  if (epoch !== generation || compacting || beforeCompact || foreignSubmitted) return;
   const seq = ++beforeCompactSeq;
-  beforeCompact = { seq, key, abandoned: false, owned: false };
+  beforeCompact = { seq, key };
   $.ui.status(BEFORE_COMPACT_STATUS);
   $.clock.after(BEFORE_COMPACT_TIMEOUT_MS, () => {
-    if (beforeCompact?.seq !== seq || beforeCompact.abandoned) return;
+    if (beforeCompact?.seq !== seq) return;
     void abandonBeforeCompact($, "The before-compact prompt timed out. Context left unchanged.");
   });
   try {
     await submitBeforeCompact($, text);
   } catch {
-    const handoff = beforeCompact;
-    if (handoff?.seq !== seq) return;
-    const started = handoff.turnId !== undefined;
-    if (!handoff.abandoned) {
-      await abandonBeforeCompact(
-        $,
-        "The before-compact prompt did not run. Context left unchanged.",
-      );
-    }
-    if (!started && beforeCompact?.seq === seq && beforeCompact.turnId === undefined) {
-      beforeCompact = undefined;
-    }
+    if (beforeCompact?.seq !== seq) return;
+    await abandonBeforeCompact($, "The before-compact prompt did not run. Context left unchanged.");
   }
 }
 
@@ -849,6 +834,7 @@ export const register: Register = (on, options) => {
     compacting = false;
     hintVisible = false;
     beforeCompact = undefined;
+    foreignSubmitted = false;
     await $.command.register({
       name: COMMAND,
       description: "Configure persistent compaction advice, experimental auto, and token minimum",
@@ -869,16 +855,19 @@ export const register: Register = (on, options) => {
     return next(e);
   });
 
-  // A person's own prompt, not this module's submit (the calling hook is skipped).
+  // Anyone's prompt or command but this module's own abandons a pending handoff, and the
+  // turn it starts is never taken for the handoff's.
   on("prompt.submit", async ($, e, next) => {
-    if ((await isActivated($)) && beforeCompact && personStarted(e.origin)) {
+    if ((await isActivated($)) && !ownSubmission(e.origin)) {
+      foreignSubmitted = true;
       await abandonBeforeCompact($);
     }
     return next(e);
   }).catch((_$, e, next) => next(e));
 
   on("command.run", async ($, e, next) => {
-    if ((await isActivated($)) && beforeCompact && personStarted(e.origin)) {
+    if ((await isActivated($)) && !ownSubmission(e.origin)) {
+      foreignSubmitted = true;
       await abandonBeforeCompact($);
     }
     return next(e);
@@ -886,15 +875,15 @@ export const register: Register = (on, options) => {
 
   on("turn.start", async ($, e, next) => {
     if (await isActivated($)) {
+      const foreign = foreignSubmitted;
+      foreignSubmitted = false;
       const handoff = beforeCompact;
-      if (handoff && handoff.turnId === undefined) {
+      if (handoff && handoff.turnId === undefined && !foreign) {
         handoff.turnId = e.turnId;
-        handoff.owned = !handoff.abandoned;
-        if (!handoff.owned) await invalidate($);
         return next(e);
       }
       await invalidate($);
-      if (handoff && handoff.turnId !== e.turnId) await abandonBeforeCompact($);
+      await abandonBeforeCompact($);
     }
     return next(e);
   });
@@ -905,10 +894,14 @@ export const register: Register = (on, options) => {
     const handoff = beforeCompact;
     if (handoff && e.agentId === undefined && handoff.turnId === e.turnId) {
       beforeCompact = undefined;
-      if (handoff.abandoned || !handoff.owned) return result;
       if (e.reason === "answer" && !e.isAborted && e.answer.trim()) {
         const key = handoff.key;
+        const epoch = generation;
         $.clock.after(0, () => {
+          if (epoch !== generation || foreignSubmitted) {
+            clearStatus($);
+            return;
+          }
           void compactNow($, key).catch(() =>
             notice(
               $,
@@ -953,7 +946,10 @@ export const register: Register = (on, options) => {
       return result;
     }
     try {
-      beforeCompact = undefined;
+      if (beforeCompact) {
+        beforeCompact = undefined;
+        clearStatus($);
+      }
       await invalidate($);
       const key = sessionKey(await $.session.id());
       await $.store.set(key, initialState(true, await $.clock.now()));
